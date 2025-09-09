@@ -1,0 +1,6 @@
+{
+    "num_particles": 500,
+    "universe_size": 1e22,
+    "time_step": 1e9,
+    "num_agents": 5
+}
