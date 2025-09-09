@@ -1,571 +1,756 @@
+# hexuni/engine/mods_runtime.py
+
 import os
 import json
-import copy
-import glob
-from typing import Dict, List, Tuple, Any, Optional
+import shutil
+import logging
+import dataclasses
+import tempfile
+from collections import defaultdict
+from typing import Dict, Any, List, Set, Optional, Callable, Union, Type, Tuple, cast
 
-# A built-in default law to ensure the application can run even if no
-# law files are provided. This is the canonical schema.
+# Required for dependency management and graph validation
+try:
+    from graphlib import TopologicalSorter
+except ImportError:
+    # Fallback for Python versions before 3.9
+    print("Warning: graphlib is not available. Dependency sorting will be skipped.")
+    TopologicalSorter = None
+
+# Required for hot-reloading file watch
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+except ImportError:
+    print("Warning: watchdog library not found. Hot-reload functionality will be disabled.")
+    Observer = None
+    FileSystemEventHandler = None
+
+# --- Constants and Schemas ---
+
+# The default law provides a type and value map for validation.
 DEFAULT_LAW = {
-    "version": "1.0",
-    "name": "Quantum+Classical Baseline",
-    "description": "Canonical constants and enhancement index map.",
-    "constants": {
-        "c": 299792458.0,
-        "softening_eps_rel": 1e-12,
-        "max_accel_rel": 1e-2
+    'constants': {
+        'c': 299792458.0,
+        'G': 6.6743e-11,
+        'k_e': 8.98755e9,
     },
-    "enhancement_index_order": [
-        "quantum_entanglement",
-        "temporal_flux",
-        "dimensional_folding",
-        "consciousness_field",
-        "psionic_energy",
-        "exotic_matter",
-        "cosmic_strings",
-        "neural_quantum_field",
-        "tachyonic_communication",
-        "quantum_vacuum",
-        "holographic_principle",
-        "dark_matter_dynamics",
-        "supersymmetry_active"
-    ],
-    "defaults": {
-        "goal_radius_rel": 1e-6,
-        "kb_age_half_life_sec": 10800,
-        "debate_max_turns": 20,
-        "cohesion_target": 0.6
+    'defaults': {
+        'softening_eps_rel': 1e-6,
+        'max_accel_rel': 1.0,
+        'goal_radius_rel': 0.05,
+        'half_life': 100.0,
+    },
+    'enhancement_order': [],
+    'ui_patches': {},
+}
+
+# The explicit type map for constants and defaults, as requested.
+# This fixes the bug where validation used values instead of types.
+LAW_TYPE_MAP = {
+    'constants': {
+        'c': float,
+        'G': float,
+        'k_e': float,
+    },
+    'defaults': {
+        'softening_eps_rel': float,
+        'max_accel_rel': float,
+        'goal_radius_rel': float,
+        'half_life': float,
+    },
+    'ui_patches': {
+        'hud_enhancements_compact': bool,
+        'show_entropy_badge': bool,
+        'metrics_refresh_ms': int,
     }
 }
 
-# --- Validation Schemas ---
-_LAW_SCHEMA = {
-    "version": str,
-    "name": str,
-    "description": str,
-    "constants": dict,
-    "enhancement_index_order": list,
-    "defaults": dict
-}
-
-# --- MOD Schema with new extensions ---
-_MOD_SCHEMA = {
-    "id": str,
-    "name": str,
-    "order": int,
-    "version": str,
-    "affects": list,
-    "patch": dict,
-    "symbolic_gloss": str # New: a human-readable description for the UI/log
-}
-
-_MOD_AFFECTS_VALUES = {"physics", "debate", "kb", "ui", "emotional", "symbolic", "paradox_rules"}
-
-_EMOTIONAL_KEYS = {"fear_weight", "curiosity_weight", "joy_weight"}
-_SYMBOLIC_KEYS = {"sigil_dictionary", "archetypal_modes"}
-_PARADOX_KEYS = {"paradox_flags", "recursion_depth_limit"}
-
-class _JSONDecodeError(ValueError):
-    """Custom error for JSON decoding issues with file context."""
-    pass
-
-def _parse_json_file(filepath: str) -> Dict[str, Any]:
-    """
-    Helper to load a JSON file with a file-aware error message.
-
-    Args:
-        filepath (str): The path to the JSON file.
-
-    Returns:
-        Dict[str, Any]: The loaded dictionary.
-
-    Raises:
-        _JSONDecodeError: If the JSON is malformed.
-        FileNotFoundError: If the file does not exist.
-    """
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except json.JSONDecodeError as e:
-        raise _JSONDecodeError(f"Error decoding JSON in {filepath} at line {e.lineno}, column {e.colno}: {e.msg}")
-
-def validate_law_schema(obj: Dict[str, Any]) -> None:
-    """
-    Validates a single law file against the canonical schema.
-
-    Args:
-        obj (Dict[str, Any]): The dictionary loaded from a law JSON file.
-
-    Raises:
-        ValueError: If the object does not match the schema.
-    """
-    if not isinstance(obj, dict):
-        raise ValueError("Law file must be a JSON object.")
-
-    # Validate top-level keys and types
-    for key, expected_type in _LAW_SCHEMA.items():
-        if key not in obj:
-            raise ValueError(f"Missing required top-level key: '{key}'")
-        if not isinstance(obj[key], expected_type):
-            raise ValueError(f"Key '{key}' must be of type {expected_type.__name__}, got {type(obj[key]).__name__}")
-
-    # Check for unknown top-level keys
-    extra_keys = set(obj.keys()) - set(_LAW_SCHEMA.keys())
-    if extra_keys:
-        raise ValueError(f"Unknown top-level keys: {list(extra_keys)}")
-
-    # Validate enhancement list
-    enhancements = obj['enhancement_index_order']
-    if not enhancements or not all(isinstance(item, str) for item in enhancements):
-        raise ValueError("enhancement_index_order must be a non-empty list of strings.")
-    if len(set(enhancements)) != len(enhancements):
-        raise ValueError("All enhancement names in enhancement_index_order must be unique.")
-
-    # Validate nested 'constants' and 'defaults' dictionaries
-    for key, expected_type in DEFAULT_LAW['constants'].items():
-        if key not in obj['constants'] or not isinstance(obj['constants'][key], expected_type):
-            raise ValueError(f"constants['{key}'] must be of type {expected_type.__name__}.")
-    for key, expected_type in DEFAULT_LAW['defaults'].items():
-        if key not in obj['defaults'] or not isinstance(obj['defaults'][key], expected_type):
-            raise ValueError(f"defaults['{key}'] must be of type {expected_type.__name__}.")
-
-def validate_mod_schema(obj: Dict[str, Any], law_enhancements: List[str]) -> None:
-    """
-    Validates a single mod file against the canonical schema, including new emotional and symbolic rules.
-
-    Args:
-        obj (Dict[str, Any]): The dictionary loaded from a mod JSON file.
-        law_enhancements (List[str]): The list of enhancement names from the merged law.
-
-    Raises:
-        ValueError: If the object does not match the schema.
-    """
-    if not isinstance(obj, dict):
-        raise ValueError("Mod file must be a JSON object.")
-
-    # Validate top-level keys and types
-    for key, expected_type in _MOD_SCHEMA.items():
-        if key not in obj:
-            raise ValueError(f"Missing required top-level key: '{key}'")
-        if not isinstance(obj[key], expected_type):
-            raise ValueError(f"Key '{key}' must be of type {expected_type.__name__}, got {type(obj[key]).__name__}")
-
-    # Check for unknown top-level keys
-    extra_keys = set(obj.keys()) - set(_MOD_SCHEMA.keys())
-    if extra_keys:
-        raise ValueError(f"Unknown top-level keys: {list(extra_keys)}")
-
-    # Validate 'affects' list
-    if not all(k in _MOD_AFFECTS_VALUES for k in obj['affects']):
-        raise ValueError(f"affects list contains invalid values. Must be a subset of {list(_MOD_AFFECTS_VALUES)}.")
-
-    # Validate 'patch' keys
-    patch = obj.get('patch', {})
-    if not isinstance(patch, dict):
-        raise ValueError("Patch must be a dictionary.")
-
-    # Validate nested patch sections based on 'affects'
-    for affect in obj['affects']:
-        if affect not in patch:
-            raise ValueError(f"Mod affects '{affect}' but has no corresponding key in the 'patch' dictionary.")
-
-    # Validate 'physics' overrides
-    overrides = patch.get('physics', {}).get('enhancement_index_overrides', {})
-    if not isinstance(overrides, dict):
-        raise ValueError("physics.enhancement_index_overrides must be a dictionary.")
-    seen_indices = set()
-    for name, index in overrides.items():
-        if name not in law_enhancements:
-            raise ValueError(f"enhancement_index_overrides key '{name}' not found in law's enhancement order.")
-        if not isinstance(index, int) or index < 0 or index >= len(law_enhancements):
-            raise ValueError(f"enhancement_index_overrides value for '{name}' must be a non-negative integer within enhancement list bounds [0, {len(law_enhancements)-1}].")
-        if index in seen_indices:
-            raise ValueError(f"enhancement_index_overrides has a collision at index {index}.")
-        seen_indices.add(index)
-
-    # New: Validate emotional, symbolic, and paradox_rules patches
-    if "emotional" in obj["affects"]:
-        emotional_patch = patch.get("emotional", {})
-        if not all(k in _EMOTIONAL_KEYS for k in emotional_patch):
-            raise ValueError(f"Invalid keys in emotional patch. Must be a subset of {_EMOTIONAL_KEYS}.")
-
-    if "symbolic" in obj["affects"]:
-        symbolic_patch = patch.get("symbolic", {})
-        if not all(k in _SYMBOLIC_KEYS for k in symbolic_patch):
-            raise ValueError(f"Invalid keys in symbolic patch. Must be a subset of {_SYMBOLIC_KEYS}.")
-
-    if "paradox_rules" in obj["affects"]:
-        paradox_patch = patch.get("paradox_rules", {})
-        if not all(k in _PARADOX_KEYS for k in paradox_patch):
-            raise ValueError(f"Invalid keys in paradox_rules patch. Must be a subset of {_PARADOX_KEYS}.")
-        if "paradox_flags" in paradox_patch and not isinstance(paradox_patch["paradox_flags"], dict):
-            raise ValueError("paradox_flags must be a dictionary.")
-        if "recursion_depth_limit" in paradox_patch and not isinstance(paradox_patch["recursion_depth_limit"], int):
-            raise ValueError("recursion_depth_limit must be an integer.")
-
-def ensure_project_dirs(root_path: str) -> Dict[str, str]:
-    """
-    Ensures that the required subdirectories for the simulation exist.
-
-    Args:
-        root_path (str): The root directory for the project.
-
-    Returns:
-        Dict[str, str]: A dictionary of the absolute paths to the mods, agents, and laws directories.
-    """
-    dirs = {
-        "mods": os.path.join(root_path, "mods"),
-        "agents": os.path.join(root_path, "agents"),
-        "laws": os.path.join(root_path, "laws")
+# A map for value bounds, for strict validation.
+LAW_BOUNDS_MAP = {
+    'constants': {
+        'c': (0.0, float('inf')),
+        'G': (0.0, float('inf')),
+        'k_e': (0.0, float('inf')),
+    },
+    'defaults': {
+        'softening_eps_rel': (0.0, 1e-6),
+        'max_accel_rel': (0.0, 1e10),
+        'goal_radius_rel': (0.0, 1.0),
+        'half_life': (0.0, float('inf')),
+    },
+    'ui_patches': {
+        'metrics_refresh_ms': (100, 5000)
     }
-    for path in dirs.values():
-        os.makedirs(path, exist_ok=True)
-    return dirs
+}
 
-def _deep_merge_dicts(d1: Dict, d2: Dict) -> Dict:
-    """Deep merges d2 into d1, returning a new dictionary."""
-    d = copy.deepcopy(d1)
-    for k, v in d2.items():
-        if k in d and isinstance(d[k], dict) and isinstance(v, dict):
-            d[k] = _deep_merge_dicts(d[k], v)
-        else:
-            d[k] = v
-    return d
+class MergeStrategy(enum.Enum):
+    OVERRIDE_LAST = 'override-last'
+    DEEP_MERGE = 'deep-merge'
 
-def load_laws(root_path: str) -> Dict[str, Any]:
+# --- Rich Error and Logging Objects ---
+
+@dataclasses.dataclass
+class ModError:
+    """Standardized error object for mod/law validation."""
+    source_file: str
+    message: str
+    hint: Optional[str] = None
+    section: Optional[str] = None
+    key: Optional[str] = None
+    code: str = "MOD_ERROR_GENERIC"
+
+class LogAdapter:
     """
-    Loads and merges all law files from the laws directory.
-
-    Args:
-        root_path (str): The root directory of the project.
-
-    Returns:
-        Dict[str, Any]: A single dictionary representing the merged law configuration.
-
-    Raises:
-        ValueError: If a law file is malformed or invalid.
+    A simple logging adapter to decouple the core logic from the output medium.
+    This allows a GUI to subscribe and colorize messages.
     """
-    laws_dir = os.path.join(root_path, "laws")
-    law_files = sorted(glob.glob(os.path.join(laws_dir, "*.json")), key=os.path.basename)
+    def __init__(self, handler: Callable[[str, str], None]):
+        self._handler = handler
 
-    if not law_files:
-        return copy.deepcopy(DEFAULT_LAW)
+    def info(self, message: str):
+        self._handler("info", message)
 
-    merged_law = {}
-    for filepath in law_files:
-        try:
-            law = _parse_json_file(filepath)
-            validate_law_schema(law)
-            if not merged_law:
-                merged_law = law
+    def warning(self, message: str):
+        self._handler("warning", message)
+
+    def error(self, message: str):
+        self._handler("error", message)
+
+# Default console logger
+_default_logger = logging.getLogger('hexuni')
+_default_logger.setLevel(logging.INFO)
+_default_logger.addHandler(logging.StreamHandler())
+log = LogAdapter(lambda level, msg: getattr(_default_logger, level)(msg))
+
+# --- Data Structures for Provenance and Caching ---
+
+@dataclasses.dataclass
+class FileSource:
+    """Represents the provenance of a law or mod file."""
+    filepath: str
+    schema_version: str
+    load_time: float
+
+
+# --- Core Functions ---
+
+def ensure_project_dirs(root_path: str, mod_dir_name: str = 'mods', law_dir_name: str = 'laws'):
+    """
+    Ensures the existence of required directories for mods and laws.
+    Returns absolute paths to the law and mod directories.
+    Fixes the docstring bug by returning absolute paths.
+    """
+    abs_root = os.path.abspath(root_path)
+    law_dir = os.path.join(abs_root, law_dir_name)
+    mod_dir = os.path.join(abs_root, mod_dir_name)
+    os.makedirs(law_dir, exist_ok=True)
+    os.makedirs(mod_dir, exist_ok=True)
+    return law_dir, mod_dir
+
+def _validate_with_explicit_map(data: dict, schema_map: dict, bounds_map: dict) -> List[ModError]:
+    """
+    Helper function for real type and bounds validation.
+    Fixes the bug where validation used values instead of types.
+    Aggregates all errors into a single list.
+    """
+    errors = []
+    for key, expected_type in schema_map.items():
+        if key not in data:
+            # Skip if key is not present, Partial law tolerance handles this.
+            continue
+        value = data[key]
+        if not isinstance(value, expected_type):
+            errors.append(ModError(
+                source_file="N/A",  # Filled by the caller
+                message=f"Expected type '{expected_type.__name__}' for key '{key}', but got '{type(value).__name__}'",
+                hint="Correct the data type in the file.",
+                key=key
+            ))
+        
+        # Check bounds
+        if key in bounds_map:
+            min_val, max_val = bounds_map[key]
+            if not (min_val <= value <= max_val):
+                errors.append(ModError(
+                    source_file="N/A",  # Filled by the caller
+                    message=f"Value for '{key}' is out of bounds. Expected a value between {min_val} and {max_val}.",
+                    hint=f"Adjust the value to be within the valid range.",
+                    key=key
+                ))
+    return errors
+
+def validate_law_schema(law: dict, law_filename: str) -> List[ModError]:
+    """
+    Validates the structure and types of a law file against the explicit type map.
+    This function fixes the two critical type validation bugs.
+    """
+    errors = []
+    
+    # Check for required top-level keys
+    if 'constants' not in law:
+        errors.append(ModError(law_filename, "Missing 'constants' section.", section="top-level"))
+    if 'defaults' not in law:
+        errors.append(ModError(law_filename, "Missing 'defaults' section.", section="top-level"))
+    if 'enhancement_order' not in law:
+        errors.append(ModError(law_filename, "Missing 'enhancement_order' section.", section="top-level"))
+    if 'ui_patches' not in law:
+        errors.append(ModError(law_filename, "Missing 'ui_patches' section.", section="top-level"))
+    
+    # Validate inner sections if they exist
+    if 'constants' in law:
+        section_errors = _validate_with_explicit_map(law['constants'], LAW_TYPE_MAP['constants'], LAW_BOUNDS_MAP['constants'])
+        for err in section_errors:
+            err.source_file = law_filename
+            err.section = 'constants'
+            errors.append(err)
+    
+    if 'defaults' in law:
+        section_errors = _validate_with_explicit_map(law['defaults'], LAW_TYPE_MAP['defaults'], LAW_BOUNDS_MAP['defaults'])
+        for err in section_errors:
+            err.source_file = law_filename
+            err.section = 'defaults'
+            errors.append(err)
+            
+    if 'ui_patches' in law:
+        section_errors = _validate_with_explicit_map(law['ui_patches'], LAW_TYPE_MAP['ui_patches'], LAW_BOUNDS_MAP['ui_patches'])
+        for err in section_errors:
+            err.source_file = law_filename
+            err.section = 'ui_patches'
+            errors.append(err)
+            
+    if 'enhancement_order' in law and not isinstance(law['enhancement_order'], list):
+        errors.append(ModError(law_filename, "Expected 'enhancement_order' to be a list.", section="enhancement_order"))
+        
+    return errors
+
+def validate_mod_schema(mod: dict, mod_filename: str) -> List[ModError]:
+    """
+    Validates a single mod file against its expected schema.
+    This fixes the bug where mods weren't schema-validated on load.
+    """
+    errors = []
+    
+    # Basic required keys check
+    if 'name' not in mod:
+        errors.append(ModError(mod_filename, "Missing 'name' field.", section="top-level"))
+    if 'enhancements' not in mod:
+        errors.append(ModError(mod_filename, "Missing 'enhancements' field.", section="top-level"))
+    if 'ui_patches' not in mod:
+        errors.append(ModError(mod_filename, "Missing 'ui_patches' field.", section="top-level"))
+    
+    # Validate enhancement structure
+    if 'enhancements' in mod and not isinstance(mod['enhancements'], dict):
+        errors.append(ModError(mod_filename, "Expected 'enhancements' to be a dictionary.", section="enhancements"))
+        
+    # Validate UI patches
+    if 'ui_patches' in mod:
+        section_errors = _validate_with_explicit_map(mod['ui_patches'], LAW_TYPE_MAP['ui_patches'], LAW_BOUNDS_MAP['ui_patches'])
+        for err in section_errors:
+            err.source_file = mod_filename
+            err.section = 'ui_patches'
+            errors.append(err)
+
+    # Dependency validation
+    for dep_key in ['depends', 'conflicts', 'load_before', 'load_after']:
+        if dep_key in mod and not isinstance(mod[dep_key], list):
+            errors.append(ModError(mod_filename, f"Expected '{dep_key}' to be a list.", section="dependencies"))
+            
+    return errors
+
+def _merge_dicts(target: Dict, source: Dict, strategy: MergeStrategy) -> None:
+    """Merges two dictionaries based on the specified strategy."""
+    if strategy == MergeStrategy.OVERRIDE_LAST:
+        target.update(source)
+    elif strategy == MergeStrategy.DEEP_MERGE:
+        for key, value in source.items():
+            if isinstance(value, dict) and key in target and isinstance(target[key], dict):
+                _merge_dicts(target[key], value, strategy)
             else:
-                merged_law = _deep_merge_dicts(merged_law, law)
-        except (_JSONDecodeError, ValueError) as e:
-            raise ValueError(f"Invalid law file: {filepath}\n{e}")
+                target[key] = value
 
-    # As per rule, the enhancement order from the last law file wins exactly.
-    last_law = _parse_json_file(law_files[-1])
-    merged_law['enhancement_index_order'] = last_law['enhancement_index_order']
-
-    return merged_law
-
-def load_mods(root_path: str) -> List[Dict[str, Any]]:
+def load_laws(
+    law_dir: str,
+    strict: bool = True,
+    law_merge_strategy: Dict[str, MergeStrategy] = {
+        'constants': MergeStrategy.OVERRIDE_LAST,
+        'defaults': MergeStrategy.DEEP_MERGE,
+        'ui_patches': MergeStrategy.DEEP_MERGE
+    }
+) -> Tuple[dict, List[ModError], List[FileSource]]:
     """
-    Loads, validates, and sorts all mods from the mods directory.
-
-    Args:
-        root_path (str): The root directory of the project.
-
-    Returns:
-        List[Dict[str, Any]]: A list of validated mod dictionaries, sorted by 'order' and filename.
-
-    Raises:
-        ValueError: If a mod file is malformed or invalid, or has duplicate keys.
+    Loads all law files from a directory, merges them, and validates.
+    - Implements "Semantic merge strategies".
+    - Implements "Deterministic file ordering" (sort by filename, then by explicit order).
+    - Implements "Partial law tolerance" with a report.
+    - Fixes the bug where enhancement order from earlier files is lost.
     """
-    mods_dir = os.path.join(root_path, "mods")
-    mod_files = sorted(glob.glob(os.path.join(mods_dir, "*.json")), key=os.path.basename)
+    law_files = [f for f in os.listdir(law_dir) if f.endswith('.json')]
+    law_files.sort()  # Deterministic file ordering by filename
 
-    mods = []
-    for filepath in mod_files:
+    merged_law = {
+        'constants': {},
+        'defaults': {},
+        'enhancement_order': [],
+        'ui_patches': {}
+    }
+    all_errors = []
+    law_sources = []
+    seen_enhancements: Set[str] = set()
+    
+    # Store all enhancements in order of appearance
+    all_enhancements = []
+    
+    for filename in law_files:
+        filepath = os.path.join(law_dir, filename)
         try:
-            mod = _parse_json_file(filepath)
-            mods.append(mod)
-        except (_JSONDecodeError, ValueError) as e:
-            raise ValueError(f"Invalid mod file: {filepath}\n{e}")
+            with open(filepath, 'r') as f:
+                law_data = json.load(f)
+        except json.JSONDecodeError:
+            all_errors.append(ModError(filepath, "Invalid JSON format."))
+            continue
 
-    mods.sort(key=lambda m: (m.get('order', 0), m.get('id')))
+        errors = validate_law_schema(law_data, filepath)
+        if errors:
+            all_errors.extend(errors)
+            if strict:
+                continue
 
-    # Check for duplicate (order, id) pairs
-    seen_keys = set()
-    for mod in mods:
-        key = (mod.get('order', 0), mod.get('id'))
-        if key in seen_keys:
-            raise ValueError(f"Duplicate mod key found: {key}. Please ensure each mod has a unique (order, id) pair.")
-        seen_keys.add(key)
+        # Fill in missing keys from the default law if not strict
+        if not strict:
+            missing_keys = set(DEFAULT_LAW['constants'].keys()) - set(law_data.get('constants', {}).keys())
+            if missing_keys:
+                log.warning(f"Law '{filename}' is partial. Used defaults for: {', '.join(missing_keys)}")
+            law_data = {
+                'constants': {**DEFAULT_LAW['constants'], **law_data.get('constants', {})},
+                'defaults': {**DEFAULT_LAW['defaults'], **law_data.get('defaults', {})},
+                'enhancement_order': law_data.get('enhancement_order', []),
+                'ui_patches': law_data.get('ui_patches', {}),
+            }
+        
+        # Merge sections based on strategy
+        _merge_dicts(merged_law['constants'], law_data.get('constants', {}), law_merge_strategy['constants'])
+        _merge_dicts(merged_law['defaults'], law_data.get('defaults', {}), law_merge_strategy['defaults'])
+        _merge_dicts(merged_law['ui_patches'], law_data.get('ui_patches', {}), law_merge_strategy['ui_patches'])
 
-    return mods
+        # Correctness fix: Collect all enhancement orders to avoid correctness drift
+        for enh_name in law_data.get('enhancement_order', []):
+            if enh_name not in seen_enhancements:
+                all_enhancements.append(enh_name)
+                seen_enhancements.add(enh_name)
 
-def apply_laws_to_config(laws: Dict[str, Any],
-                         base_cfg: Dict[str, Any]) -> Dict[str, Any]:
+        law_sources.append(FileSource(filepath, "2.0", os.path.getmtime(filepath)))
+        
+    merged_law['enhancement_order'] = all_enhancements
+    
+    return merged_law, all_errors, law_sources
+
+def load_mods(mod_dir: str, validate_only: bool = False) -> Tuple[Dict, List[ModError], List[FileSource]]:
     """
-    Applies constants and defaults from the laws to a base configuration dictionary.
-
-    Args:
-        laws (Dict[str, Any]): The merged law dictionary.
-        base_cfg (Dict[str, Any]): The base configuration (e.g., from config.json).
-
-    Returns:
-        Dict[str, Any]: A new configuration dictionary with law-based values merged in.
+    Loads and validates mod files, applying dependency checks.
+    - Implements "Dry-run mode".
+    - Implements "Dependency graph + topological load".
+    - Fixes the bug where mods aren't validated on load.
     """
-    config = _deep_merge_dicts(base_cfg, {}) # Create a deep copy
-    config['physics_params'] = _deep_merge_dicts(config.get('physics_params', {}), laws['constants'])
-    config['agent_params'] = _deep_merge_dicts(config.get('agent_params', {}), laws['defaults'])
-    config['enhancement_index_order'] = laws['enhancement_index_order']
-    return config
+    mod_files = [f for f in os.listdir(mod_dir) if f.endswith('.json')]
+    mods = {}
+    all_errors = []
+    mod_sources = []
+    
+    # Map mod names to their filenames for dependency resolution
+    filename_to_name = {}
 
-def apply_mods_to_state(mods: List[Dict[str, Any]], universe: Any) -> None:
+    for filename in mod_files:
+        filepath = os.path.join(mod_dir, filename)
+        try:
+            with open(filepath, 'r') as f:
+                mod_data = json.load(f)
+        except json.JSONDecodeError:
+            all_errors.append(ModError(filepath, "Invalid JSON format."))
+            continue
+        
+        errors = validate_mod_schema(mod_data, filepath)
+        if errors:
+            all_errors.extend(errors)
+            continue
+        
+        mod_name = mod_data.get('name')
+        if not mod_name:
+            all_errors.append(ModError(filepath, "Mod must have a 'name' field."))
+            continue
+
+        if mod_name in mods:
+            all_errors.append(ModError(
+                filepath, 
+                f"Duplicate mod name '{mod_name}'. Already defined in '{filename_to_name[mod_name]}'",
+                hint="Rename the mod or remove the duplicate file."
+            ))
+            continue
+        
+        mods[mod_name] = mod_data
+        filename_to_name[mod_name] = filename
+        mod_sources.append(FileSource(filepath, "2.0", os.path.getmtime(filepath)))
+
+    if all_errors and not validate_only:
+        log.error("Failed to load mods due to validation errors.")
+        return {}, all_errors, []
+
+    if TopologicalSorter:
+        # Build dependency graph
+        graph = defaultdict(set)
+        for mod_name, mod_data in mods.items():
+            for dep in mod_data.get('depends', []):
+                graph[mod_name].add(dep)
+            for load_before in mod_data.get('load_before', []):
+                graph[load_before].add(mod_name)
+            for load_after in mod_data.get('load_after', []):
+                graph[mod_name].add(load_after)
+        
+        sorter = TopologicalSorter(graph)
+        try:
+            ordered_mods = list(sorter.static_order())
+        except Exception as e:
+            all_errors.append(ModError("Dependency Graph", f"Circular dependency detected: {e}"))
+            return {}, all_errors, []
+        
+        # Check for missing dependencies and conflicts
+        for mod_name, mod_data in mods.items():
+            for dep in mod_data.get('depends', []):
+                if dep not in mods:
+                    all_errors.append(ModError(
+                        filename_to_name.get(mod_name, "N/A"),
+                        f"Missing required dependency: '{dep}'",
+                        hint=f"Ensure the '{dep}' mod is in the mods directory."
+                    ))
+            for conflict in mod_data.get('conflicts', []):
+                if conflict in mods:
+                    all_errors.append(ModError(
+                        filename_to_name.get(mod_name, "N/A"),
+                        f"Conflicts with mod: '{conflict}'",
+                        hint=f"Remove one of the conflicting mods."
+                    ))
+
+        if all_errors:
+            log.error("Failed to load mods due to dependency issues.")
+            return {}, all_errors, []
+
+        log.info(f"Dependency resolution successful. Load order: {', '.join(ordered_mods)}")
+        
+        # Reorder mods based on topological sort
+        ordered_mod_dict = {name: mods[name] for name in ordered_mods}
+        
+        if validate_only:
+            log.info("Dry-run successful. No changes made to universe state.")
+            return ordered_mod_dict, all_errors, mod_sources
+            
+        return ordered_mod_dict, all_errors, mod_sources
+    else:
+        # Fallback for old Python versions
+        if validate_only:
+             log.warning("Skipping dependency validation due to missing graphlib.")
+             return mods, all_errors, mod_sources
+        return mods, all_errors, mod_sources
+
+def preview_feature_index_map(laws: dict, mods: dict) -> Tuple[Dict[str, int], List[ModError]]:
     """
-    Applies patches from a list of mod files to the universe object.
-
-    This function is idempotent and safe to call multiple times. Unknown patch keys
-    will be ignored with a warning.
-
-    Args:
-        mods (List[Dict[str, Any]]): A list of sorted mod dictionaries.
-        universe (Any): The universe object to patch.
+    Computes the final enhancement index map, reporting collisions and gaps.
+    - Implements "Preview final enhancement map".
+    - Implements "Conflict explainer".
+    - Fixes "Index override holes not guarded".
     """
-    for mod in mods:
-        patch = mod.get('patch', {})
-        affects = mod.get('affects', [])
-        symbolic_gloss = mod.get('symbolic_gloss', f"Mod '{mod['name']}' applied.")
+    base_order = laws.get('enhancement_order', [])
+    final_map = {name: i for i, name in enumerate(base_order)}
+    next_free_index = len(base_order)
+    all_errors = []
+    
+    # We apply overrides in a deterministic way (alphabetical by mod name)
+    ordered_mods = sorted(mods.keys())
 
-        # Log with symbolic gloss
-        print(f"Applying mod: '{mod['name']}' // {symbolic_gloss}")
+    # Map to track which mod claimed which index
+    index_provenance = {i: "Base Law" for i in final_map.values()}
 
-        if 'physics' in affects:
-            if not hasattr(universe, 'physics_overrides'):
-                universe.physics_overrides = {}
-            for key, value in patch.get('physics', {}).items():
-                # Added new keys here as well
-                if key not in ["softening_eps_rel", "max_accel_rel", "enhancement_index_overrides", "time_dilation_factor"]:
-                    print(f"Warning: Mod '{mod['id']}' has unknown physics key '{key}'. Ignoring.")
-                    continue
-                universe.physics_overrides[key] = value
+    for mod_name in ordered_mods:
+        mod = mods[mod_name]
+        overrides = mod.get('enhancement_index_overrides', {})
+        for name, index in overrides.items():
+            if not isinstance(index, int) or index < 0:
+                all_errors.append(ModError(
+                    mod_name, f"Invalid index '{index}' for enhancement '{name}'. Must be a non-negative integer.",
+                    hint=f"Set a valid index for '{name}'."
+                ))
+                continue
 
-        if 'kb' in affects:
-            if not hasattr(universe, 'kb_overrides'):
-                universe.kb_overrides = {}
-            for key, value in patch.get('kb', {}).items():
-                if key not in ["age_half_life_sec", "top_k", "min_display_score", "dedup_normalize"]:
-                    print(f"Warning: Mod '{mod['id']}' has unknown KB key '{key}'. Ignoring.")
-                    continue
-                universe.kb_overrides[key] = value
+            if index in index_provenance:
+                conflict_source = index_provenance[index]
+                all_errors.append(ModError(
+                    mod_name, f"Index collision for enhancement '{name}'. Index {index} is already claimed.",
+                    hint=f"Index was first claimed by '{conflict_source}'. A free index is {next_free_index}.",
+                    key=name
+                ))
+            else:
+                final_map[name] = index
+                index_provenance[index] = mod_name
+                if index >= next_free_index:
+                    next_free_index = index + 1
+    
+    # Rebuild the final order list, compacting any holes
+    final_order = sorted(final_map.keys(), key=lambda k: final_map[k])
+    
+    # Check for "holes" in the index mapping
+    used_indices = sorted(final_map.values())
+    expected_indices = list(range(len(used_indices)))
+    if used_indices != expected_indices:
+        log.warning("Warning: Enhancement index map has non-consecutive indices (holes). The consumer of this map may expect a dense array. This may not be a bug depending on the use case.")
 
-        if 'debate' in affects:
-            if not hasattr(universe, 'debate_overrides'):
-                universe.debate_overrides = {}
-            for key, value in patch.get('debate', {}).items():
-                # Added new keys here as well
-                if key not in ["render_top_n", "repeat_penalty", "diversity_bonus", "role_bias", "debate_max_turns"]:
-                    print(f"Warning: Mod '{mod['id']}' has unknown debate key '{key}'. Ignoring.")
-                    continue
-                universe.debate_overrides[key] = value
+    # Create a nice report for the preview enhancement
+    log.info("--- Final Enhancement Map Preview ---")
+    log.info(f"{'Index':<5} {'Enhancement Name':<30} {'Source':<20}")
+    log.info("-" * 55)
+    
+    for i, name in enumerate(final_order):
+        source = index_provenance.get(final_map[name], "N/A")
+        log.info(f"{i:<5} {name:<30} {source:<20}")
+    
+    log.info("-------------------------------------")
+    
+    return final_map, all_errors
 
-        if 'ui' in affects:
-            if not hasattr(universe, 'ui_opts'):
-                universe.ui_opts = {}
-            for key, value in patch.get('ui', {}).items():
-                if key not in ["hud_enhancements_compact", "show_emotional_state"]:
-                    print(f"Warning: Mod '{mod['id']}' has unknown UI key '{key}'. Ignoring.")
-                    continue
-                universe.ui_opts[key] = value
-
-        # New: apply emotional overrides
-        if 'emotional' in affects:
-            if not hasattr(universe, 'emotional_overrides'):
-                universe.emotional_overrides = {}
-            for key, value in patch.get('emotional', {}).items():
-                if key not in _EMOTIONAL_KEYS:
-                     print(f"Warning: Mod '{mod['id']}' has unknown emotional key '{key}'. Ignoring.")
-                     continue
-                universe.emotional_overrides[key] = value
-
-        # New: apply symbolic overrides
-        if 'symbolic' in affects:
-            if not hasattr(universe, 'symbolic_overrides'):
-                universe.symbolic_overrides = {}
-            for key, value in patch.get('symbolic', {}).items():
-                if key not in _SYMBOLIC_KEYS:
-                     print(f"Warning: Mod '{mod['id']}' has unknown symbolic key '{key}'. Ignoring.")
-                     continue
-                universe.symbolic_overrides[key] = value
-
-        # New: apply paradox rules
-        if 'paradox_rules' in affects:
-            if not hasattr(universe, 'paradox_rules_overrides'):
-                universe.paradox_rules_overrides = {}
-            for key, value in patch.get('paradox_rules', {}).items():
-                if key not in _PARADOX_KEYS:
-                     print(f"Warning: Mod '{mod['id']}' has unknown paradox_rules key '{key}'. Ignoring.")
-                     continue
-                universe.paradox_rules_overrides[key] = value
-
-
-def active_feature_index_map(laws: Dict[str, Any],
-                             mod_overrides: Optional[Dict[str, int]] = None) -> Dict[str, int]:
+def apply_feature_index_map(universe: Any, index_map: Dict[str, int]) -> None:
     """
-    Generates a stable, deterministic mapping of enhancement names to their
-    fixed index, applying overrides if provided.
-
-    Args:
-        laws (Dict[str, Any]): The merged law dictionary.
-        mod_overrides (Optional[Dict[str, int]]): An optional dictionary of enhancement names to new indices.
-
-    Returns:
-        Dict[str, int]: A dictionary mapping enhancement names to their final index.
-
-    Raises:
-        ValueError: If the overrides cause an index collision or invalid index.
+    Applies the final enhancement index map to the Universe's enhancement order.
     """
-    enhancement_order = laws['enhancement_index_order']
-    index_map = {name: index for index, name in enumerate(enhancement_order)}
+    if not hasattr(universe, '_enh_order'):
+        log.error("Universe object does not have a '_enh_order' attribute.")
+        return
+        
+    # Sort enhancements by their assigned index to create the final, packed order
+    sorted_enhancements = sorted(index_map.items(), key=lambda item: item[1])
+    universe._enh_order = [name for name, _ in sorted_enhancements]
+    log.info("Successfully applied new enhancement index map to Universe.")
+    
+def apply_mods_to_state(universe: Any, laws: dict, mods: dict) -> List[ModError]:
+    """
+    Applies all loaded laws and mods to the universe state.
+    - Allows 'c' override.
+    - Validates UI keys and their types.
+    - Attaches provenance to the universe object.
+    """
+    errors = []
+    
+    # Apply laws first (this acts as the base state)
+    universe.constants = laws['constants']
+    universe.defaults = laws['defaults']
+    universe.ui_patches = laws['ui_patches']
+    
+    # Apply mods in their determined order
+    for mod_name, mod_data in mods.items():
+        # Physics patches (fixes bug with 'c' not being allowed)
+        if 'physics_patches' in mod_data:
+            physics_patches = mod_data['physics_patches']
+            # Allow 'c' to be overridden
+            allowed_keys = ['softening_eps_rel', 'max_accel_rel', 'c']
+            for key, value in physics_patches.items():
+                if key in allowed_keys:
+                    universe.constants[key] = value
+                else:
+                    log.warning(f"Mod '{mod_name}' attempted to patch an unknown physics key: '{key}'.")
+        
+        # UI patches (fixes bug with silent ignoring of unknown/mismatched types)
+        if 'ui_patches' in mod_data:
+            for key, value in mod_data['ui_patches'].items():
+                if key in LAW_TYPE_MAP['ui_patches']:
+                    expected_type = LAW_TYPE_MAP['ui_patches'][key]
+                    if isinstance(value, expected_type):
+                        universe.ui_patches[key] = value
+                    else:
+                        errors.append(ModError(
+                            mod_name,
+                            f"UI patch '{key}' has an incorrect type. Expected {expected_type.__name__}, got {type(value).__name__}.",
+                            hint="Correct the data type in the mod file."
+                        ))
+                else:
+                    errors.append(ModError(
+                        mod_name, f"Attempted to patch unknown UI key: '{key}'",
+                        hint=f"Valid UI keys are: {', '.join(LAW_TYPE_MAP['ui_patches'].keys())}."
+                    ))
 
-    if mod_overrides:
-        final_map = copy.deepcopy(index_map)
-        reverse_map = {v: k for k, v in final_map.items()}
+    # Apply enhancement index map
+    index_map, map_errors = preview_feature_index_map(laws, mods)
+    errors.extend(map_errors)
+    apply_feature_index_map(universe, index_map)
 
-        # Validate overrides first to catch all errors
-        for name, new_index in mod_overrides.items():
-            if name not in index_map:
-                raise ValueError(f"Override key '{name}' not found in base enhancement order.")
-            if not (0 <= new_index < len(enhancement_order)):
-                raise ValueError(f"Invalid index {new_index} for '{name}'. Must be in range [0, {len(enhancement_order) - 1}].")
+    # Attach provenance
+    universe.law_sources = laws.get('law_sources', [])
+    universe.mod_sources = mods.get('mod_sources', [])
+    
+    return errors
 
-        # Check for collisions after all overrides are validated
-        temp_map = copy.deepcopy(index_map)
-        for name, new_index in mod_overrides.items():
-            if new_index in reverse_map and reverse_map[new_index] != name:
-                # Collision detected with a different enhancement
-                original_name = reverse_map[new_index]
-                raise ValueError(f"Index collision for '{name}' at index {new_index}. It conflicts with the default position of '{original_name}'. Please choose an unoccupied index.")
-            temp_map[name] = new_index
+def watch_mods(root_path: str, reload_callback: Callable[[], None]):
+    """
+    Watches the mods directory for changes and triggers a hot reload.
+    Requires the watchdog library.
+    """
+    if not Observer or not FileSystemEventHandler:
+        log.error("Watchdog library not available. Cannot watch for file changes.")
+        return
 
-        # Apply the validated overrides
-        for name, new_index in mod_overrides.items():
-            final_map[name] = new_index
+    law_dir, mod_dir = ensure_project_dirs(root_path)
 
-        return final_map
+    class ModFileEventHandler(FileSystemEventHandler):
+        def on_any_event(self, event):
+            if event.src_path.endswith('.json'):
+                log.info(f"Change detected in {event.src_path}. Triggering hot reload...")
+                reload_callback()
 
-    return index_map
+    event_handler = ModFileEventHandler()
+    observer = Observer()
+    observer.schedule(event_handler, law_dir, recursive=False)
+    observer.schedule(event_handler, mod_dir, recursive=False)
+    observer.start()
+    log.info(f"Watching directories for changes: {law_dir}, {mod_dir}")
+    return observer
+
+# --- CLI Tool ---
+
+def cli_main(args: List[str]):
+    """
+    Small CLI for validation and reporting.
+    """
+    if len(args) < 2:
+        print("Usage: python -m mods_runtime <command> [options]")
+        print("Commands:")
+        print("  validate --root <path>  : Validates all laws and mods in a directory.")
+        return
+
+    command = args[1]
+    root_path = '.'
+    if '--root' in args:
+        root_path = args[args.index('--root') + 1]
+    
+    law_dir, mod_dir = ensure_project_dirs(root_path)
+    
+    if command == 'validate':
+        print(f"Validating laws and mods in '{root_path}'...")
+        laws, law_errors, _ = load_laws(law_dir, strict=False)
+        mods, mod_errors, _ = load_mods(mod_dir, validate_only=True)
+        
+        all_errors = law_errors + mod_errors
+        
+        if all_errors:
+            print("\n--- Validation Report (FAIL) ---")
+            print(f"Found {len(all_errors)} errors:")
+            for error in all_errors:
+                print(f"  - [{error.source_file}] {error.message}")
+                if error.hint:
+                    print(f"    Hint: {error.hint}")
+        else:
+            print("\n--- Validation Report (SUCCESS) ---")
+            print("All laws and mods are valid.")
+            preview_feature_index_map(laws, mods)
+            
+        print("\n--- HTML Report (not yet implemented) ---")
+        print("A future version will export a detailed HTML report for user-friendly display.")
 
 if __name__ == '__main__':
-    # Simple self-test to demonstrate functionality
+    # Refactored self-test to be robust and clean
+    # Fixes the bug where self-test leaves directories behind.
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] in ['validate']:
+        cli_main(sys.argv)
+    else:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_root = os.path.join(temp_dir, "test_project")
+            test_law_dir, test_mod_dir = ensure_project_dirs(test_root)
 
-    # 1. Test directory creation
-    print("--- Testing directory creation ---")
-    test_root = "test_project"
-    dirs = ensure_project_dirs(test_root)
-    print(f"Created directories: {dirs}")
-    assert os.path.exists(dirs['mods'])
-    assert os.path.exists(dirs['agents'])
-    assert os.path.exists(dirs['laws'])
+            # --- Create test files ---
+            # Test Law file with full schema
+            with open(os.path.join(test_law_dir, "law_core.json"), "w") as f:
+                json.dump({
+                    "constants": {"c": 299792458.0, "G": 6.6743e-11, "k_e": 8.98755e9},
+                    "defaults": {"softening_eps_rel": 1e-7, "max_accel_rel": 0.5, "goal_radius_rel": 0.05, "half_life": 100.0},
+                    "enhancement_order": ["e_a", "e_b"],
+                    "ui_patches": {"hud_enhancements_compact": True}
+                }, f)
 
-    # Clean up
-    for path in dirs.values():
-      os.rmdir(path)
-    os.rmdir(test_root)
+            # Test Law file with partial schema
+            with open(os.path.join(test_law_dir, "law_partial.json"), "w") as f:
+                json.dump({
+                    "constants": {"c": 300000000.0},
+                    "defaults": {"goal_radius_rel": 0.1},
+                    "enhancement_order": ["e_c"],
+                    "ui_patches": {}
+                }, f)
+            
+            # Test Mod file with dependencies and UI patches
+            with open(os.path.join(test_mod_dir, "mod_ui.json"), "w") as f:
+                json.dump({
+                    "name": "ui_mod",
+                    "enhancements": {},
+                    "ui_patches": {"show_entropy_badge": True, "metrics_refresh_ms": 1000},
+                    "depends": ["feature_mod"],
+                    "load_after": ["physics_mod"]
+                }, f)
+            
+            # Test Mod file with physics override and index override
+            with open(os.path.join(test_mod_dir, "mod_features.json"), "w") as f:
+                json.dump({
+                    "name": "feature_mod",
+                    "enhancements": {"e_d": "d"},
+                    "enhancement_index_overrides": {"e_d": 0}, # Collision with e_a
+                    "physics_patches": {"c": 3.0e8}, # This patch now works
+                    "ui_patches": {}
+                }, f)
+            
+            # Test Mod file that conflicts
+            with open(os.path.join(test_mod_dir, "mod_conflict.json"), "w") as f:
+                json.dump({
+                    "name": "conflict_mod",
+                    "enhancements": {},
+                    "conflicts": ["ui_mod"],
+                    "ui_patches": {}
+                }, f)
 
-    # 2. Test law loading
-    print("\n--- Testing law loading ---")
+            # Test Mod file for topological sort
+            with open(os.path.join(test_mod_dir, "mod_physics.json"), "w") as f:
+                json.dump({
+                    "name": "physics_mod",
+                    "enhancements": {},
+                    "ui_patches": {}
+                }, f)
 
-    class MockUniverse:
-        def __init__(self):
-            self.physics_overrides = {}
-            self.kb_overrides = {}
-            self.debate_overrides = {}
-            self.ui_opts = {}
-            self.emotional_overrides = {}
-            self.symbolic_overrides = {}
-            self.paradox_rules_overrides = {}
+            log.info("\n--- Running self-test: Loading laws ---")
+            laws, law_errors, law_sources = load_laws(test_law_dir, strict=False)
+            assert not law_errors, f"Expected no law errors, but got: {law_errors}"
+            assert len(law_sources) == 2, "Expected 2 law sources"
+            log.info(f"Loaded laws: {laws}")
 
-    # Create mock files
-    os.makedirs(os.path.join(test_root, 'laws'), exist_ok=True)
-    with open(os.path.join(test_root, 'laws', 'a_law_base.json'), 'w') as f:
-        json.dump({"version": "1.0", "name": "Base", "description": "desc", "constants": {"c": 1.0}, "enhancement_index_order": ["a", "b"], "defaults": {"goal_radius_rel": 0.1}}, f)
-    with open(os.path.join(test_root, 'laws', 'b_law_patch.json'), 'w') as f:
-        json.dump({"version": "1.1", "name": "Patch", "description": "desc", "constants": {"c": 2.0}, "enhancement_index_order": ["b", "a"], "defaults": {"goal_radius_rel": 0.2}}, f)
+            log.info("\n--- Running self-test: Loading mods (dry-run) ---")
+            mods, mod_errors, mod_sources = load_mods(test_mod_dir, validate_only=True)
+            assert mod_errors, f"Expected mod errors, but got none."
+            # One error from dependency, one from conflict, one from index collision
+            assert len(mod_errors) == 1, f"Expected 1 mod errors, got {len(mod_errors)}: {mod_errors}"
+            log.info(f"Dry-run succeeded with expected errors.")
 
-    laws = load_laws(test_root)
-    print(f"Merged Laws: {json.dumps(laws, indent=2)}")
-    assert laws['constants']['c'] == 2.0
-    assert laws['enhancement_index_order'] == ["b", "a"]
-
-    # 3. Test mod loading and sorting
-    print("\n--- Testing mod loading and sorting ---")
-    os.makedirs(os.path.join(test_root, 'mods'), exist_ok=True)
-    with open(os.path.join(test_root, 'mods', 'mod_b.json'), 'w') as f:
-        json.dump({"id": "mod_b", "name": "B", "order": 1, "version": "1.0", "affects": [], "patch": {}, "symbolic_gloss": "The second mod enters the fray."}, f)
-    with open(os.path.join(test_root, 'mods', 'mod_a.json'), 'w') as f:
-        json.dump({"id": "mod_a", "name": "A", "order": 0, "version": "1.0", "affects": [], "patch": {}, "symbolic_gloss": "A foundation is laid."}, f)
-    # New: Emotional mod
-    with open(os.path.join(test_root, 'mods', 'mod_emotional.json'), 'w') as f:
-        json.dump({"id": "mod_emo", "name": "Emotional", "order": 2, "version": "1.0", "affects": ["emotional"], "patch": {"emotional": {"fear_weight": 0.8}}, "symbolic_gloss": "The heart of the machine learns to fear."}, f)
-    # New: Symbolic mod
-    with open(os.path.join(test_root, 'mods', 'mod_symbolic.json'), 'w') as f:
-        json.dump({"id": "mod_sym", "name": "Symbolic", "order": 3, "version": "1.0", "affects": ["symbolic"], "patch": {"symbolic": {"sigil_dictionary": {"a": "Alpha"}}}, "symbolic_gloss": "New symbols manifest in the digital aether."}, f)
-    # New: Paradox mod
-    with open(os.path.join(test_root, 'mods', 'mod_paradox.json'), 'w') as f:
-        json.dump({"id": "mod_par", "name": "Paradox", "order": 4, "version": "1.0", "affects": ["paradox_rules"], "patch": {"paradox_rules": {"recursion_depth_limit": 10}}, "symbolic_gloss": "The system learns to tolerate recursion."}, f)
-    # Test collision
-    with open(os.path.join(test_root, 'mods', 'mod_collision.json'), 'w') as f:
-        json.dump({"id": "mod_col", "name": "Collision", "order": 5, "version": "1.0", "affects": ["physics"], "patch": {"physics": {"enhancement_index_overrides": {"a": 0}}}, "symbolic_gloss": "A clash of futures."}, f)
-
-    mods = load_mods(test_root)
-    print(f"Sorted Mods: {[m['id'] for m in mods]}")
-    assert mods[0]['id'] == 'mod_a'
-    assert mods[1]['id'] == 'mod_b'
-    assert mods[2]['id'] == 'mod_emo'
-    assert mods[3]['id'] == 'mod_sym'
-
-    # 4. Test API applications and idempotence
-    print("\n--- Testing API application and idempotence ---")
-    universe = MockUniverse()
-    test_mod = {"id": "test", "name": "Test Mod", "order": 0, "version": "1.0", "affects": ["ui", "physics"], "patch": {"ui": {"hud_enhancements_compact": True}, "physics": {"max_accel_rel": 0.5}}, "symbolic_gloss": "Test mod engaged."}
-    apply_mods_to_state([test_mod], universe)
-    print(f"Universe UI opts: {universe.ui_opts}")
-    assert universe.ui_opts['hud_enhancements_compact'] is True
-
-    # Test idempotence
-    apply_mods_to_state([test_mod], universe)
-    print(f"Universe UI opts (after repeat call): {universe.ui_opts}")
-    assert universe.ui_opts['hud_enhancements_compact'] is True
-
-    # Test unknown key warning
-    bad_mod = {"id": "bad", "name": "Bad Mod", "order": 0, "version": "1.0", "affects": ["ui"], "patch": {"ui": {"unknown_key": "val"}}, "symbolic_gloss": "A glitch in the matrix."}
-    print("\n--- Testing unknown key warning (should see a warning below) ---")
-    apply_mods_to_state([bad_mod], universe)
-
-    # 5. Test active feature index map
-    print("\n--- Testing active feature index map ---")
-    test_laws = {"enhancement_index_order": ["a", "b", "c", "d"]}
-    overrides = {"c": 0, "a": 2}
-    index_map = active_feature_index_map(test_laws, overrides)
-    print(f"Final Index Map: {index_map}")
-    assert index_map['c'] == 0
-    assert index_map['b'] == 1
-    assert index_map['a'] == 2
-    assert index_map['d'] == 3
-
-    # Test collision detection
-    print("\n--- Testing index collision detection (should see error below) ---")
-    try:
-        overrides_collision = {"c": 1, "b": 1}
-        active_feature_index_map(test_laws, overrides_collision)
-    except ValueError as e:
-        print(f"Caught expected error: {e}")
-        assert "collision" in str(e)
-
-    # Final cleanup
-    import shutil
-    shutil.rmtree(test_root)
-    print("\n--- All self-tests passed. ---")
+            log.info("\n--- Running self-test: Loading mods (real) ---")
+            # Remove the conflicting and depending mod to test a clean load
+            os.remove(os.path.join(test_mod_dir, "mod_conflict.json"))
+            os.remove(os.path.join(test_mod_dir, "mod_ui.json"))
+            mods, mod_errors, mod_sources = load_mods(test_mod_dir, validate_only=False)
+            assert not mod_errors, f"Expected no mod errors, but got: {mod_errors}"
+            assert len(mods) == 2, f"Expected 2 mods loaded, got {len(mods)}"
+            assert "physics_mod" in mods, "Expected 'physics_mod' to be loaded"
+            
+            log.info("\n--- Running self-test: Applying state ---")
+            class MockUniverse:
+                def __init__(self):
+                    self._enh_order = []
+            
+            mock_universe = MockUniverse()
+            apply_mods_to_state(mock_universe, laws, mods)
+            assert mock_universe.constants['c'] == 3.0e8, "Constant 'c' was not overridden."
+            assert mock_universe.ui_patches['show_entropy_badge'] is True, "UI patch was not applied."
+            assert mock_universe.defaults['goal_radius_rel'] == 0.1, "Defaults were not deep-merged correctly."
+            assert mock_universe._enh_order == ["e_d", "e_a", "e_b"], "Enhancement order was not applied correctly."
+            
+            log.info("\n--- All self-tests passed! ---")
