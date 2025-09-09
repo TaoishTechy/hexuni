@@ -463,7 +463,7 @@ class UniverseVisualizer:
                 ttk.Label(rel_frame, text=f"Agent {other_id}: {score:.2f}").pack(anchor="w")
 
     def update_universe_view(self, frame):
-        self.universe.step()
+        self.universe.update()
 
         for patch in self.ax.patches:
             patch.remove()
@@ -535,7 +535,14 @@ class UniverseVisualizer:
         return list(self.layers.values()) + [self.layers['hud_text']]
 
     def run(self):
-        self.ani = animation.FuncAnimation(self.fig, self.update_universe_view, interval=50, blit=False)
+        self.ani = animation.FuncAnimation(
+            self.fig,
+            self.update_universe_view,
+            interval=50,
+            blit=False,
+            frames=None,
+            save_count=1000
+        )
         self.root.mainloop()
 
 if __name__ == "__main__":
