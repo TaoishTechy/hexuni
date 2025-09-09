@@ -1,173 +1,211 @@
+
 # HEXUNI — AGI Emergence & Quantum Toy Universe
 
-A downloadable, hackable sandbox for **emergent AGI behaviors** in a **quantum-flavored 2D toy universe**.  
-It combines a fast N-body core (Numba), agent cognition stubs with a persistent knowledge base, a Tkinter + Matplotlib UI, a live metrics dashboard, and a lightweight command console for steering agents and toggling “enhancements.”
+A hackable, instrumented sandbox for **emergent AGI behaviors** in a **quantum‑flavored 2D toy universe**.  
+It blends a fast particle core (Numba), simple agents with per‑agent knowledge bases, a Tkinter + Matplotlib UI, voxel avatars, a natural‑language console (v0.3 parser with **multiline & batch**), and a lightweight debate arena that auto‑progresses and can be force‑ended.
 
-> **Goal:** Provide a playful-but-instrumented arena to probe coordination, debate, and learning signals under exotic environmental effects (entanglement tags, temporal flux fields, “exotic matter” repulsion, cosmic strings) — without pretending to be physically exact.
+> **Intent:** explore coordination, learning signals, and symbolic play under exotic environmental effects — without pretending to be physically exact.
 
 ---
 
-## ✨ Features
+## ✨ Highlights
 
-- **2D N-body physics engine** (Numba-accelerated `Particle` jitclass) with gravity, charge, and optional short-range repulsive term for “exotic” particles.  
-- **Temporal flux field** (map-driven potential) and **entanglement tagging** (visual-only correlation markers).  
-- **Agents (AGIAgent)** with per-agent **SQLite knowledge bases** and a simple **NLP command console** to query/set goals or start debates.  
-- **Tkinter GUI** with **Matplotlib animation**, multi-tab layout (Universe View, Metrics Dashboard, Command Console).  
-- **Metrics Collector** tracking FPS, average reward, energy, entropy, learning-rate proxy, and active enhancements.  
-- **Multiverse checkpoints**: periodic snapshots; optional causality rollback.  
+- **2D particle simulator** (Numba) with gravity, charge, optional short‑range repulsion for “exotic” particles, speed‑cap at `c`, **periodic boundaries**, and a temporal‑flux map (no velocity scaling).
+- **Agents (AGIAgent)** with per‑agent **SQLite KB**, prompting (`prompt agent <id> ...`), and a tiny reward‑shaped policy.
+- **Voxel avatars** (16×16, grayscale) per agent with deterministic **mutations** (`flip`, `rotate`, `noise`, `anneal`) and an **auto‑mutate** toggle.
+- **Debate Arena**: `start debate on <topic> with agents <ids>` auto‑steps each frame, concludes in ~20 turns, winner announced; `end debate` to force stop.
+- **Console (v0.3)**: natural‑language commands, **multiline input**, **semicolon batching**, **comments** (`# ...`) allowed, robust whitespace handling, and helpful errors.
+- **Metrics dashboard**: FPS, memory, energy, entropy, learning‑rate proxy, sociometric cohesion, intellectual entropy.
+- **Snapshots**: timeline checkpointing, optional multiverse saves.
+
+---
+
+## 🔧 Requirements
+
+- Python 3.9+ (3.10 recommended)  
+- Packages: `numpy`, `numba`, `matplotlib`, `psutil`, `sqlite3` (stdlib), `tkinter` (system package on Linux)  
+  - Linux: `sudo apt-get install python3-tk`
+- (Optional) Tk theme `azure.tcl` — app runs fine without it.
 
 ---
 
 ## 🚀 Quickstart
 
-### 1) Create a fresh virtual environment
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
-```
 
-### 2) Install dependencies
-```bash
 pip install --upgrade pip
 pip install numpy numba matplotlib psutil
-# On Linux you may need Tk (system package): sudo apt-get install python3-tk
-```
 
-### 3) Run the sim
-```bash
 python main.py
 ```
 
-If you see a warning about `azure.tcl`, that’s just the optional theme; the UI will fall back to the default Tk theme.
+If you see an `Axes3D` warning or theme load warning, it’s harmless. Use a clean venv for best results.
 
 ---
 
-## ⚙️ Configuration
+## ⚙️ Configuration (`config.json`)
 
-Edit `config.json` to define the initial universe scale and counts:
 ```json
 {
-  "num_particles": 500,
-  "universe_size": 1e22,
-  "time_step": 1e9,
-  "num_agents": 5
+  "num_particles": 750,
+  "universe_size": 2.5e22,
+  "time_step": 5e9,
+  "num_agents": 10
 }
 ```
-- **num_particles**: initial particle count  
-- **universe_size**: square world size (positions wrap around)  
-- **time_step**: seconds per simulation step (HUD converts to years for display)  
-- **num_agents**: number of AGI agents to spawn
+- **num_particles**: total particle count (O(N²) forces; keep ≤ a few thousand).  
+- **universe_size**: world width/height (square).  
+- **time_step**: seconds per simulation step (**HUD shows years**).  
+- **num_agents**: number of agents to spawn at start.
 
 ---
 
-## 🕹️ Controls (Command Console)
+## 🧠 Command Console (v0.3, multiline + batching)
 
-Type commands in the **Command Console** tab (press **Enter** to submit):
+- **Batching:** Split on newlines **and** `;` — executed in order.  
+- **Comments:** Lines starting with `#` are ignored; inline `# ...` stripped.  
+- **Aliases:** Some commands have concise forms (see below).  
+- **Placeholder:** The input’s placeholder, if present, is ignored.
 
-- Set a goal for an agent:
-  ```
-  set goal for agent 0 to 1.0e21,2.0e21
-  ```
+### Core commands
 
-- Activate an enhancement (toggle on):
-  ```
-  activate temporal flux
-  activate exotic matter
-  activate quantum entanglement
-  ```
+**Set goal**
+```
+set goal for agent <id> to <x,y>
+set_goal <id> <x,y>
+set_goal all
+```
 
-- Query an agent:
-  ```
-  query agent 2 what is in your knowledge
-  query agent 1 reward status
-  ```
+**Toggle enhancements**
+```
+activate <enhancement>
+deactivate <enhancement>
+```
+Available keys:  
+`quantum_entanglement, temporal_flux, dimensional_folding, consciousness_field, psionic_energy, exotic_matter, cosmic_strings, neural_quantum_field, tachyonic_communication, quantum_vacuum, holographic_principle, dark_matter_dynamics, supersymmetry_active`
 
-- Start a debate between agents:
-  ```
-  start debate on the nature of consciousness with agents 0,1,3
-  ```
+**Query / Prompt**
+```
+query agent <id> <text>
+prompt agent <id> <text>
+```
 
-- Help:
-  ```
-  help
-  ```
+**Debate**
+```
+start debate on <topic> with agents <id1,id2,...>
+end debate
+```
 
-> **Tip:** Enhancements are also listed in the HUD when enabled.
+**Avatar**
+```
+mutate avatar <id> [flip|rotate|noise|anneal]
+```
 
----
+**Help**
+```
+help
+```
 
-## 🧩 Enhancements (Toggles)
-
-Default flags (can be activated via console):
-- `quantum_entanglement` — tags nearby pairs; visual lines in the Universe View  
-- `temporal_flux` — reads from a flux map (visual/clock-rate concept; no velocity scaling)  
-- `dimensional_folding` — optional short-range extra force (off by default)  
-- `consciousness_field` — allows thought-state alignment between agents (off by default)  
-- `psionic_energy` — psionic force influences (off by default)  
-- `exotic_matter` — replaces negative mass with a short-range repulsive term  
-- `cosmic_strings` — draws topological defects for effect  
-- `neural_quantum_field` — reserved for future work  
-- `tachyonic_communication` — paradox/rollback experiments (off by default)  
-- `quantum_vacuum` — occasional pair creation with pruning  
-- `holographic_principle` — reserved for future work
+**Unknown command →** `Command not recognized. Try 'help' or 'prompt agent 0 <text>'.`
 
 ---
 
-## 🏗️ Architecture at a Glance
+## 🧪 Copy‑Paste Demos
 
-- **`components.py`**
-  - `Particle` (Numba jitclass): position, velocity, mass, charge, flags
-  - Physics kernel: `_compute_forces_and_effects(...)`
-  - Quantum stubs: `_bell_state_check(...)`, `_apply_quantum_decoherence(...)`
-  - `NeurotransmitterSystem`, `MetricsCollector`, `NaturalLanguageProcessor`
-  - `KnowledgeBase` (per-agent SQLite), `DebateArena`, `AGIAgent`
-  - `Universe`: particles, agents, enhancements, save/load, step loop
+### A) Feature showcase
+```
+# toggles
+activate temporal flux; activate exotic matter
+deactivate quantum entanglement   # inline ok
+activate psionic energy
 
-- **`main.py`**
-  - Loads `config.json`
-  - Builds `Universe`, spawns agents
-  - **UniverseVisualizer** (Tkinter): tabs, plots, HUD, and `FuncAnimation` loop
+# goals
+set goal for agent 0 to 1.00e21,2.00e21
+set_goal 1 1.50e21,1.50e21
+set_goal all
 
-- **`config.json`**
-  - Project defaults: particles, size, time step, agent count
+# KB + avatars + debate
+prompt agent 0 Store: seek gradients near strings and cosmic strings
+query agent 0 knowledge
+mutate avatar 0 anneal; mutate avatar 0 noise; mutate avatar 0 flip; mutate avatar 0 rotate
+start debate on emergence under temporal flux with agents 0,1
+```
 
----
+### B) Team play (second debate after the first finishes or after `end debate`)
+```
+activate dimensional folding
+activate quantum vacuum
+deactivate psionic energy
 
-## 💾 Save/Load & Multiverse
+set_goal 2 8.0e20,7.0e20
+set_goal 3 2.2e21,8.5e20
+set_goal 4 1.1e21,1.1e21
 
-- The sim periodically writes `timeline_checkpoint.json` for timeline safety.  
-- Manual snapshots are written as `universe_state.json` or `multiverse_<time>.json`.  
-- If you experiment with tachyons/causality, the sim can roll back to the last checkpoint.  
+prompt agent 2 Align with gradients near strings; prompt agent 2 store tactic: vortex-follow
+prompt agent 3 Form coalition with agent 4 to bracket the target
+prompt agent 4 Mirror agent 3 velocity at half magnitude
 
----
+mutate avatar 2 rotate
+mutate avatar 3 noise
+mutate avatar 4 anneal
 
-## 📈 Metrics & HUD
+query agent 2 knowledge
+query agent 3 knowledge
+query agent 4 knowledge
 
-- **HUD** (Universe View): sim time (years), agent count, avg reward, active enhancements.  
-- **Metrics Dashboard**: FPS, total energy, learning-rate proxy, and more.  
-
-Export metrics anytime with:
-```python
-# Example (inside code): universe.metrics_collector.export_metrics("metrics.json")
+start debate on coordination vs exploration under flux with agents 2,3,4
 ```
 
 ---
 
-## 🧪 Notes on “Quantum”
+## 🏗️ Architecture
 
-This is a **toy** environment. “Quantum” features are modeled as **stochastic or structural** effects (tags, maps, repulsive pockets), not as full quantum dynamics. They’re designed to shape agent behavior and coordination patterns without heavy physics machinery.
+- **`components.py`**
+  - `Particle` (Numba jitclass), force kernel `_compute_forces_and_effects(...)`
+  - Quantum stubs: `_bell_state_check`, `_apply_quantum_decoherence`
+  - `AGIAgent` (policy + KB + voxel avatar + reward shaping)
+  - `KnowledgeBase` (SQLite + mock embeddings)
+  - `DebateArena` (auto‑turns, winner announcement)
+  - `NaturalLanguageProcessor` (v0.3 parser with batching/comments/aliases)
+  - `MetricsCollector`
+  - `Universe` (state, step loop, enhancements, snapshots)
+
+- **`main.py`**
+  - Tkinter **Notebook** with tabs: Universe View, Metrics Dashboard, Command Console, Entity Manager
+  - **FuncAnimation** render loop; **HUD** shows years, agents, avg reward, active enhancements
+  - Entity Manager with **voxel avatar** view + **Auto‑mutate** toggle
+  - Debate progress bar + label (turns/20)
 
 ---
 
-## 🛠️ Troubleshooting
+## 🛡️ Physics Notes (toy realism)
 
-- **Matplotlib 3D warning** about `Axes3D`: harmless if you’re not using 3D; usually caused by mixed system/pip installs. Use a clean venv.  
-- **Tk not found**: install `python3-tk` via your OS package manager.  
-- **Numba first-run latency**: the first step compiles the kernels; subsequent steps are fast.  
-- **Headless servers**: use a virtual display (Xvfb) or switch to a non-interactive backend and disable Tk UI.
+- Speeds are **capped** at `c`; positions **wrap** at world edges.  
+- Temporal flux **does not** scale velocities; it’s a field for potential/structure.  
+- Exotic matter is modeled as a **short‑range repulsion**, not negative mass.  
+- Decoherence adds small stochastic noise.  
+- This is a **toy** environment; use it to probe emergent behavior, not physical accuracy.
+
+---
+
+## 🧯 Troubleshooting
+
+- **Theme errors (`azure.tcl`)** — harmless. Theme switching is guarded; UI falls back gracefully.  
+- **Matplotlib 3D/Axes warnings** — safe to ignore if you’re not using 3D.  
+- **Low FPS** — lower `num_particles` and/or map resolution; O(N²) forces dominate.  
+- **Debate stuck** — it should auto‑advance; if needed, run `end debate` then start a new one.  
+- **Zero rewards** — reward shaping shows progress; larger step counts help.
+
+---
+
+## 📜 License
+
+MIT (recommended). Add a `LICENSE` file if distributing.
 
 ---
 
 ## 🙌 Credits
 
-You, the brave explorer. Have fun pushing the edges of emergence and symbolic play.
+You — explorer of emergent AGI and playful physics.
