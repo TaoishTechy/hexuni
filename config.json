@@ -1,36 +1,141 @@
 {
-    "sim": {
-        "size": 100.0,
-        "boundary_mode": "wrap"
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/TaoishTechy/hexuni/config-schema.json",
+  "title": "Hexuni Configuration",
+  "description": "Schema for validating the Hexuni simulation configuration.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "description": "Configuration version number for migration.",
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$"
     },
-    "physics": {
-        "integrator": "semi_implicit",
-        "fixed_dt": 0.01,
-        "max_accel_rel": 1000.0,
-        "cutoff_radius": 5.0,
-        "use_soa": false,
-        "use_gpu": false
+    "title": {
+      "description": "The title of the simulation window.",
+      "type": "string",
+      "minLength": 1
     },
-    "enhancements": {
-        "psionic_energy_active": 1,
-        "dark_matter_dynamics_active": 0,
-        "dimensional_folding_active": 0,
-        "teleportation_active": 0
+    "description": {
+      "description": "A brief description of the simulation.",
+      "type": "string"
     },
-    "enhancement_order": [
-        "psionic_energy_active",
-        "dark_matter_dynamics_active",
-        "dimensional_folding_active",
-        "teleportation_active"
-    ],
-    "metrics": {
-        "history_len": 100,
-        "update_interval": 1.0
+    "window": {
+      "description": "Configuration for the simulation window.",
+      "type": "object",
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 640,
+          "maximum": 3840
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 480,
+          "maximum": 2160
+        },
+        "fullscreen": {
+          "type": "boolean",
+          "default": false
+        },
+        "resizable": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "required": ["width", "height"],
+      "additionalProperties": false
     },
-    "autosave": {
-        "enabled": true,
-        "refresh_rate": 300,
-        "filepath": "autosave.json",
-        "min_interval": 60
+    "colors": {
+      "description": "Color definitions for the simulation.",
+      "type": "object",
+      "properties": {
+        "background": {
+          "description": "RGBA background color",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{8})$"
+            },
+            {
+              "type": "array",
+              "items": { 
+                "type": "integer", 
+                "minimum": 0, 
+                "maximum": 255 
+              },
+              "minItems": 3,
+              "maxItems": 4
+            }
+          ]
+        },
+        "border": {
+          "description": "RGBA border color",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{8})$"
+            },
+            {
+              "type": "array",
+              "items": { 
+                "type": "integer", 
+                "minimum": 0, 
+                "maximum": 255 
+              },
+              "minItems": 3,
+              "maxItems": 4
+            }
+          ]
+        },
+        "text": {
+          "description": "RGBA text color",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{8})$"
+            },
+            {
+              "type": "array",
+              "items": { 
+                "type": "integer", 
+                "minimum": 0, 
+                "maximum": 255 
+              },
+              "minItems": 3,
+              "maxItems": 4
+            }
+          ]
+        }
+      },
+      "required": ["background", "border"],
+      "additionalProperties": false
+    },
+    "simulation": {
+      "description": "Simulation parameters",
+      "type": "object",
+      "properties": {
+        "max_entities": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "default": 1000
+        },
+        "tick_rate": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 60.0
+        },
+        "time_scale": {
+          "type": "number",
+          "minimum": 0.001,
+          "maximum": 1000.0,
+          "default": 1.0
+        }
+      },
+      "additionalProperties": false
     }
+  },
+  "required": ["version", "title", "window", "colors"],
+  "additionalProperties": false
 }
