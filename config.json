@@ -1,6 +1,15 @@
 {
-    "num_particles": 500,
-    "universe_size": 1e22,
-    "time_step": 1e9,
-    "num_agents": 5
+    "num_particles": 750,
+    "universe_size": 2.5e22,
+    "time_step": 5e9,
+    "num_agents": 10,
+    "physics_params": {
+        "dark_matter_density": 0.25,
+        "exotic_matter_prevalence": 0.05,
+        "supersymmetry_pairs": 5
+    },
+    "agent_params": {
+        "initial_reward": 1000,
+        "goal_range_factor": 0.8
+    }
 }
