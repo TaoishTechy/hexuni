@@ -1,100 +1,36 @@
-"schema_version": "1.0",
-"app_version": "2025-09-09T11:38:00Z",
-
-"project_paths": {
-    "__comment": "Novel Enhancement: Centralize project paths. Provides defaults that can be overridden.",
-    "mods": "mods",
-    "laws": "laws",
-    "agents": "agents",
-    "snapshots": "snapshots"
-},
-
-"mods_runtime": {
-    "__comment": "Novel Enhancement: All runtime-tunable parameters for physics and agents.",
-    "physics_params": {
-        "__comment": "Novel Enhancement: Surface canonical physics law constants for safe overrides. Bug: Catches missing or wrong types.",
-        "c": 299792458.0,
-        "softening_eps_rel": 1e-12,
-        "max_accel_rel": 1e-2
+{
+    "sim": {
+        "size": 100.0,
+        "boundary_mode": "wrap"
     },
-    "agent_params": {
-        "__comment": "Novel Enhancement: Expose agent-specific parameters.",
-        "goal_radius_rel": 1e-6,
-        "kb_age_half_life_sec": 10800,
-        "debate_max_turns": 20,
-        "cohesion_target": 0.6
+    "physics": {
+        "integrator": "semi_implicit",
+        "fixed_dt": 0.01,
+        "max_accel_rel": 1000.0,
+        "cutoff_radius": 5.0,
+        "use_soa": false,
+        "use_gpu": false
     },
-    "enhancement_index_order": [
-        "gravity",
-        "momentum",
-        "cohesion"
+    "enhancements": {
+        "psionic_energy_active": 1,
+        "dark_matter_dynamics_active": 0,
+        "dimensional_folding_active": 0,
+        "teleportation_active": 0
+    },
+    "enhancement_order": [
+        "psionic_energy_active",
+        "dark_matter_dynamics_active",
+        "dimensional_folding_active",
+        "teleportation_active"
     ],
-    "debate_overrides": {
-        "__comment": "Novel Enhancement: Fine-tune debate engine without a custom mod. Bug: Catches invalid keys/types.",
-        "render_top_n": 3,
-        "repeat_penalty": 1.1,
-        "diversity_bonus": 0.5,
-        "role_bias": 0.2
-    },
-    "kb_overrides": {
-        "__comment": "Novel Enhancement: Surface knowledge base knobs.",
-        "half_life_policy": "exponential",
-        "vector_norm_flag": true
-    },
-    "mod_loader": {
-        "__comment": "Novel Enhancement: Control mod loading behavior. Bug: Catches unknown keys.",
-        "validate_only": false,
-        "strict": true
-    }
-},
-
-"sim_core": {
-    "__comment": "Novel Enhancement: Core simulation engine parameters.",
-    "seed": 1337,
-    "headless": false,
-    "profiling": {
-        "__comment": "Novel Enhancement: Toggle heavy performance instrumentation.",
-        "enable": false,
-        "collect_memory": true,
-        "collect_cpu": true
+    "metrics": {
+        "history_len": 100,
+        "update_interval": 1.0
     },
     "autosave": {
-        "__comment": "Novel Enhancement: Centralize autosave policy for GUI and CLI.",
         "enabled": true,
-        "interval_steps": 100
-    },
-    "snapshots": {
-        "__comment": "Novel Enhancement: Standardize snapshot naming to prevent overwrite. Bug: Enforces timestamped pattern.",
-        "dir": "snapshots",
-        "filename_pattern": "snap%Y%m%d%H%M%S.json"
-    },
-    "logging": {
-        "__comment": "Novel Enhancement: Standardize logging. Bug: Prevents inconsistent ad-hoc prints.",
-        "level": "INFO",
-        "color": true
-    },
-    "performance": {
-        "__comment": "Novel Enhancement: Set performance caps for scaling.",
-        "max_particles": 20000,
-        "hologram_refresh_rate": 100
-    },
-    "export": {
-        "__comment": "Novel Enhancement: Define export presets for metrics and plots.",
-        "metrics_file": "metrics.json",
-        "plots": ["reward", "entropy", "alignment", "cohesion"]
+        "refresh_rate": 300,
+        "filepath": "autosave.json",
+        "min_interval": 60
     }
-},
-
-"ui_opts": {
-    "__comment": "Novel Enhancement: GUI options for a consistent user experience. Bug: Catches wrong types for UI flags.",
-    "hud_enhancements_compact": true,
-    "metrics_refresh_ms": 250,
-    "theme": "dark"
-},
-
-"console": {
-    "__comment": "Novel Enhancement: Standardize console output behavior. Bug: Catches conflicting headless/GUI flags.",
-    "rich_output": true,
-    "timestamps": true,
-    "json_mode_default": false
 }
