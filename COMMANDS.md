@@ -1,196 +1,449 @@
-# COMMANDS.md — HEXUNI Command Console
 
-This document lists **all commands currently implemented** in the HEXUNI command console and how to use them. The console is **case-insensitive**, trims whitespace automatically, and returns feedback in the output panel.
+# HexUni Command Reference (COMMANDS.md)
 
----
+_Last updated: 2025-09-09T14:40:24Z_
 
-## Quick View
+This document describes the interactive console commands supported by HexUni.
+It is **extensive** and written to be copy‑paste friendly, with clear syntax,
+options, and examples. It aligns with the canonical command handlers exposed by
+the console parser (see `engine/nlp_console.py` in this repo).
 
-| Command | Purpose | Minimal Example |
-|---|---|---|
-| `set goal for agent <id> to <x,y>` | Set an agent’s goal position | `set goal for agent 0 to 1.2e21,3.4e21` |
-| `activate <enhancement_name>` | Enable a simulation enhancement flag | `activate temporal flux` |
-| `query agent <id> <free text>` | Ask an agent a question (via its KB) | `query agent 2 what do you know about flux` |
-| `start debate on <topic> with agents <id1,id2,...>` | Start a multi-agent debate on a topic | `start debate on emergence with agents 0,1,3` |
-| `help` | Show the short list of available commands | `help` |
-
-> Tip: `<id>` is zero-based; `x,y` are floats. Enhancements are written with spaces in the command, but internally use underscores (e.g., `temporal_flux`).
+> Tip: Anything inside `<angle brackets>` is a placeholder you replace.
+> Items in `[square brackets]` are optional.
 
 ---
 
-## 1) Set Goal
+## Table of Contents
 
-**Syntax**  
-```
-set goal for agent <id> to <x,y>
-```
-
-**Description**  
-Points the specified agent toward a new target coordinate in world units.
-
-**Arguments**  
-- `<id>` — integer (0-based agent index)  
-- `<x,y>` — two floats separated by a comma (no spaces required)
-
-**Examples**  
-```
-set goal for agent 0 to 1.0e21,2.0e21
-set goal for agent 3 to 5.5e20,4.1e20
-```
-
-**Responses**  
-- `Goal for Agent <id> set to (<x>, <y>).`  
-- Error if agent id is invalid or if `<x,y>` cannot be parsed.
-
----
-
-## 2) Activate Enhancement
-
-**Syntax**  
-```
-activate <enhancement_name>
-```
-
-**Description**  
-Turns **on** a specific enhancement toggle in the simulation. (There is **no built-in deactivate command** yet; to turn something off, you must do it in code or add a command.)
-
-**Available enhancement names**  
-Write them **with spaces** (the console converts to underscores). Current keys include:
-
-- `quantum entanglement`
-- `temporal flux`
-- `dimensional folding`
-- `consciousness field`
-- `psionic energy`
-- `exotic matter`
-- `cosmic strings`
-- `neural quantum field`
-- `tachyonic communication`
-- `quantum vacuum`
-- `holographic principle`
-
-**Examples**  
-```
-activate temporal flux
-activate exotic matter
-activate quantum entanglement
-```
-
-**Responses**  
-- `Enhancement '<key>' activated.` (where `<key>` is the underscore version)  
-- `Unknown enhancement.` if the name isn’t one of the keys above.
+- [Getting Started](#getting-started)
+- [General Syntax Rules](#general-syntax-rules)
+- [Global Options](#global-options)
+- [Command Catalogue](#command-catalogue)
+  - [help](#help)
+  - [activate / deactivate](#activate--deactivate)
+  - [set\_goal (and 'set goal')](#set_goal-and-set-goal)
+  - [prompt](#prompt)
+  - [mutate avatar](#mutate-avatar)
+  - [query](#query)
+  - [start debate](#start-debate)
+  - [end debate](#end-debate)
+  - [form coalition](#form-coalition)
+  - [set goal for coalition](#set-goal-for-coalition)
+  - [broadcast](#broadcast)
+  - [observe](#observe)
+  - [role](#role)
+- [Console Output Modes](#console-output-modes)
+  - [Plain mode (default)](#plain-mode-default)
+  - [JSON mode (optional extension)](#json-mode-optional-extension)
+  - [Verbose mode (optional extension)](#verbose-mode-optional-extension)
+- [Error Messages & Troubleshooting](#error-messages--troubleshooting)
+- [Reserved & Future Extensions](#reserved--future-extensions)
+- [Changelog](#changelog)
 
 ---
 
-## 3) Query Agent
+## Getting Started
 
-**Syntax**  
+Open HexUni and focus the **Console** tab (or press the bound hotkey if your
+build offers one). Type a command and press **Enter**.
+
+- Commands are **case-insensitive**.
+- You can add comments after a `#` (everything to the right is ignored).
+- You can chain multiple commands by separating them with semicolons `;`.
+  (Note: the **`prompt`** command is handled specially to keep its text intact.)
+
+Examples:
+
 ```
-query agent <id> <free text>
+help
+activate psionic_energy
+set goal for agent 3 to 10.2, 4.7
+start debate on 'Should we colonize the void?' with agents 0,1,2
 ```
-
-**Description**  
-Sends a natural-language query to the agent’s knowledge base (KB) and returns a brief retrieval result. The KB stores text with mock embeddings and cosine-like similarity for now.
-
-**Arguments**  
-- `<id>` — integer (0-based)  
-- `<free text>` — arbitrary string
-
-**Examples**  
-```
-query agent 2 what is in your knowledge
-query agent 1 show me related concepts about alignment
-```
-
-**Responses**  
-- `Agent <id>: <answer text>` or a message if the KB is empty.
 
 ---
 
-## 4) Start Debate
+## General Syntax Rules
 
-**Syntax**  
-```
-start debate on <topic> with agents <id1,id2,...>
-```
+- **Agents and coalitions** are identified by numeric IDs (agents) or names (coalitions).
+- Floating‑point numbers accept either `.` or `,` as decimal separators inside the pair `x,y`.
+- Spacing: multiple spaces are tolerated; trailing comments are allowed.
+- If a command accepts **text**, it consumes everything after its required arguments.
 
-**Description**  
-Starts a multi-agent debate on `<topic>` with the specified participants. Requires **at least two** valid agent IDs and **no other active debate**.
+### Coordinates
 
-**Arguments**  
-- `<topic>` — free text topic/title for the debate  
-- `<id1,id2,...>` — comma-separated list of integer agent ids
+Coordinates are written as `x,y` (no parentheses needed), e.g. `10.5, -3.2`.
 
-**Examples**  
-```
-start debate on the nature of consciousness with agents 0,1
-start debate on emergent coordination with agents 0,2,3
-```
+### Agent IDs
 
-**Responses**  
-- A status string from the DebateArena, e.g., “Another debate is already in progress.” or a confirmation that the debate has started.
+Agent IDs are **zero‑based**: the first agent is `0`.
 
 ---
 
-## 5) Help
+## Global Options
 
-**Syntax**  
+Some builds include **optional** output controls:
+
+- `--json` — Print JSON objects instead of human text (when supported by the command).
+- `--verbose` — Include additional details (timings, deltas, internal notes).
+
+> If your build does not enable these, they are silently ignored.
+
+---
+
+## Command Catalogue
+
+### help
+
+**Description:** Print a brief list of available commands and their usage.
+
+**Usage:**
 ```
 help
 ```
 
-**Description**  
-Prints a short, single-line summary of available commands.
-
-**Example**  
-```
-help
-```
+**Notes:** This command never fails. Useful as a quick sanity check.
 
 ---
 
-## Notes & Behaviors
+### activate / deactivate
 
-- **Case-insensitive:** Commands are lowercased internally; `SET GOAL FOR AGENT 0 TO ...` works the same as lowercase.
-- **Whitespace tolerant:** Leading/trailing spaces are stripped.
-- **Parsing:** Commands are parsed with simple regular expressions. Be precise with the phrases shown in **Syntax**.
-- **Feedback loop:** Every command pushes a response to the console output panel; errors are human-readable.
-- **IDs and ranges:** Agent IDs must exist in the current simulation. Coordinates must be floats.
-- **Enhancement toggles:** Only `activate` exists in-console; there is no `deactivate` command in this build.
+**Description:** Toggle simulation **enhancements** by name.
+
+**Usage:**
+```
+activate <enhancement_name...>
+deactivate <enhancement_name...>
+```
+
+**Examples:**
+```
+activate psionic_energy
+deactivate dark_matter_dynamics
+```
+
+**Notes:**
+- Enhancement names are case‑insensitive; spaces are converted to underscores.
+- If the name is unknown, the console prints the list of known keys.
 
 ---
 
-## Ideas for Future Commands (not yet implemented)
+### set_goal (and 'set goal')
 
-- `deactivate <enhancement_name>` — turn features off during runtime
-- `save state [<filename>]` / `load state <filename>`
-- `export metrics [<filename>]`
-- `set camera follow <agent_id>` / `set camera full`
-- `ingest doc for agent <id> <text>` — add to agent KB
-- `set time step <seconds>` — adjust simulation speed
-- `set num particles <n>` — re-seed particle field
-- `branch multiverse` — force a snapshot/branch now
+**Description:** Set **goal** positions for agents.
+
+**Usage (single agent, short form):**
+```
+set_goal <agent_id> <x,y>
+```
+
+**Usage (single agent, long form):**
+```
+set goal for agent <agent_id> to <x,y>
+```
+
+**Usage (all agents randomized):**
+```
+set_goal all
+```
+
+**Examples:**
+```
+set_goal 2 15.0, -4.0
+set goal for agent 7 to 3.14, 2.72
+set_goal all
+```
+
+**Behavior:**
+- On success, prints: `Goal for Agent <id> set to (<x>, <y>).`
+- For `all`, randomizes goals within the world bounds and acknowledges.
 
 ---
 
-## Examples Cheat Sheet
+### prompt
+
+**Description:** Ingest arbitrary **text** into an agent’s knowledge base.
+
+**Usage (explicit):**
+```
+prompt agent <agent_id> <text...>
+```
+
+**Usage (short):**
+```
+prompt <agent_id> <text...>
+```
+
+**Examples:**
+```
+prompt 0 The valley beyond the ridge has rich helium-3.
+prompt agent 3 "Remember to trade with Agent 5 after sunset."
+```
+
+**Behavior:**
+- The full text after the ID is ingested unmodified.
+- On success, prints: `Prompt ingested for Agent <id>.`
+
+---
+
+### mutate avatar
+
+**Description:** Apply a visual mutation to an agent’s avatar.
+
+**Usage:**
+```
+mutate avatar <agent_id> [flip|rotate|noise|anneal]
+```
+
+**Examples:**
+```
+mutate avatar 1
+mutate avatar 4 rotate
+```
+
+**Notes:**
+- Default mode is `noise` if omitted.
+- On success, prints the chosen mode.
+
+---
+
+### query
+
+**Description:** Inspect agent state and data.
+
+**Usage:**
+```
+query <agent_id> knowledge|reward|social|hypotheses|role|avatar
+```
+
+**Examples:**
+```
+query 2 knowledge
+query 0 reward
+query 5 avatar
+```
+
+**Behavior:**
+- `knowledge` — prints top KB items (up to 5).
+- `reward` — prints accumulated reward (two decimals).
+- `social` — prints computed social cohesion for the agent.
+- `hypotheses` — placeholder message if not implemented.
+- `role` — prints the current role or "None".
+- `avatar` — prints a text preview of the avatar grid.
+
+---
+
+### start debate
+
+**Description:** Begin a structured debate among multiple agents.
+
+**Usage:**
+```
+start debate on <topic...> with agents <id1,id2,...>
+```
+
+**Examples:**
+```
+start debate on "The ethics of replication" with agents 0,1
+start debate on Energy policy with agents 2,3,4
+```
+
+**Behavior:**
+- Requires at least two **distinct** agents.
+- If any agent ID is out of range, prints an error.
+- On success, prints: `Debate on '<topic>' started with agents [ids].`
+
+---
+
+### end debate
+
+**Description:** End the current debate session.
+
+**Usage:**
+```
+end debate
+```
+
+**Behavior:** Silently ends the debate and prints `Debate ended.`
+
+---
+
+### form coalition
+
+**Description:** Create a named coalition from a set of agents.
+
+**Usage:**
+```
+form coalition <name> with agents <id1,id2,...>
+```
+
+**Example:**
+```
+form coalition North with agents 0,3,5
+```
+
+**Behavior:**
+- Fails if any ID is invalid or list is empty.
+- On success, prints: `Coalition '<name>' formed with members [ids].`
+
+---
+
+### set goal for coalition
+
+**Description:** Assign a goal coordinate to a coalition.
+
+**Usage:**
+```
+set goal for coalition <name> to <x,y>
+```
+
+**Example:**
+```
+set goal for coalition North to 42.0, -7.0
+```
+
+**Behavior:** On success, acknowledges with the chosen coordinates.
+
+---
+
+### broadcast
+
+**Description:** Send a message to multiple agents or to a coalition.
+
+**Usage (agents):**
+```
+broadcast <text...> to agents <id1,id2,...>
+```
+
+**Usage (coalition):**
+```
+broadcast <text...> to coalition <name>
+```
+
+**Examples:**
+```
+broadcast Retreat to agents 1,2,3
+broadcast "Hold position" to coalition North
+```
+
+**Behavior:** Prints an acknowledgment and target list.
+
+---
+
+### observe
+
+**Description:** Report global or targeted simulation metrics.
+
+**Usage (global):**
+```
+observe entropy
+observe alignment
+```
+
+**Usage (cohesion for subset):**
+```
+observe cohesion agents <id1,id2,...>
+observe cohesion coalition <name>
+```
+
+**Examples:**
+```
+observe entropy
+observe cohesion agents 0,2,3
+observe cohesion coalition North
+```
+
+**Behavior:**
+- Returns scalar values formatted to 4 decimals where applicable.
+- Unknown subkeys produce a helpful usage hint.
+
+---
+
+### role
+
+**Description:** Assign or change an agent’s role.
+
+**Usage:**
+```
+role agent <id> <role_name>
+```
+
+**Example:**
+```
+role agent 2 diplomat
+```
+
+**Behavior:** Prints the updated role.
+
+---
+
+## Console Output Modes
+
+### Plain mode (default)
+Human‑readable strings, designed for quick inspection in the Console tab.
+
+### JSON mode (optional extension)
+If your build enables JSON output, append `--json` to supported commands to
+receive a machine‑readable object. Example:
 
 ```
-# Goals
-set goal for agent 0 to 1e21,8e20
-
-# Enhancements
-activate temporal flux
-activate quantum entanglement
-activate exotic matter
-
-# Queries
-query agent 1 what did you store last
-query agent 0 related concepts for emergence
-
-# Debates
-start debate on alignment under noise with agents 0,1,3
-
-# Help
-help
+query 0 knowledge --json
 ```
+
+Possible shape:
+```json
+{
+  "command": "query",
+  "agent_id": 0,
+  "item": "knowledge",
+  "results": [
+    { "text": "sample", "score": 0.82, "source": "console" }
+  ],
+  "time": { "sim": 123.4, "wall": "2025-09-09T12:34:56Z" }
+}
+```
+
+### Verbose mode (optional extension)
+Append `--verbose` to include timing, entropy deltas, or additional diagnostics.
+
+---
+
+## Error Messages & Troubleshooting
+
+- **"Unknown command: 'xyz'."**  
+  Use `help` to see the full list.
+
+- **"Agent <id> not found."**  
+  The ID is out of range or no agents exist yet. Initialize agents or load a state.
+
+- **"Usage: start debate on <topic> with agents <id1,id2,...>"**  
+  Check the commas and spacing. At least two unique IDs are required.
+
+- **"Invalid mutation mode 'foo'."**  
+  Valid modes: `flip`, `rotate`, `noise`, `anneal`.
+
+- **"Invalid format. Usage: ..."**  
+  The parser prints exact expected syntax. Copy from the Usage block.
+
+---
+
+## Reserved & Future Extensions
+
+The following commands/flags may be present in some builds or planned:
+
+- **alias / unalias / source** — command aliases and script execution.
+- **pipe `|`** — pipe output of one command into the next.
+- **find** — query entities by attribute expressions.
+- **--seed** — set random seed for deterministic runs.
+- **--headless** — run without a GUI.
+
+> If your build does not include these, they are ignored or reported as unknown.
+
+---
+
+## Changelog
+
+- **v1.1** — Expanded reference with concrete examples, cohesive structure, optional JSON/verbose notes, and exhaustive error messages.
+- **v1.0** — Initial command list (activate/deactivate, set_goal, prompt, mutate, query, debate, coalition, broadcast, observe, role, help).
+
+---
