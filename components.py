@@ -1,10 +1,8 @@
-# Updated components for the Hexuni simulation.
-# This file defines the core data structures and physics-related helpers.
-
 import numpy as np
 import json
 import os
 from collections import deque
+import random
 
 # --- NUMBA IMPORT GUARD ---
 # Guard all Numba imports behind a single try/except block.
@@ -16,7 +14,7 @@ try:
 except ImportError:
     print("Numba not available. Falling back to non-JIT versions.")
     NUMBA_AVAILABLE = False
-    
+
     # Define a no-op jit and jitclass decorator.
     def jit(*args, **kwargs):
         def wrapper(func):
@@ -91,10 +89,16 @@ class Universe:
     def __init__(self, config=None, initial_state=None):
         self.config = config or {}
         self.particles = []
+        self.agents = [] # This list will hold AGIAgent instances
         self._particles_array_aos = None # Array of Structs (AoS) for Numba
         self._particles_array_soa = None # Struct of Arrays (SoA) for Numba
         self._use_soa = self.config.get('physics.use_soa', False)
-        
+
+        # --- Initialize core attributes from config for easy access ---
+        self.size = self.config.get('size', 1e18)
+        self.time_step = self.config.get('time_step', 1e-10)
+        self.num_particles = self.config.get('num_particles', 1000)
+
         # --- Memory Pooling ---
         # Keep a persistent buffer and update in-place to reduce GC churn.
         self._particles_buffer_size = 0
@@ -128,7 +132,7 @@ class Universe:
     def _build_law_index_map(self):
         """Builds a name -> index map for enhancements for dynamic indexing."""
         return {name: i for i, name in enumerate(self._enh_order)}
-        
+
     def rebuild_enhancement_array(self):
         """
         Rebuilds the enhancement bit-array only if a dirty flag is set.
@@ -168,7 +172,7 @@ class Universe:
             self._enhancements_dirty = True
         else:
             print(f"Warning: Enhancement '{name}' not found in configuration.")
-    
+
     def _pack_particles_array(self):
         """
         Packs the list of Particle objects into a single NumPy array (AoC or SoA).
@@ -177,7 +181,7 @@ class Universe:
         n = len(self.particles)
         if n == 0:
             return None
-        
+
         if self._use_soa:
             # --- SoA Layout ---
             # Creates a struct-of-arrays layout for potential performance gains.
@@ -191,7 +195,7 @@ class Universe:
                     'flags': np.zeros(n, dtype=np.int64)
                 }
                 self._particles_buffer_size = n
-            
+
             for i, p in enumerate(self.particles):
                 self._particles_array_soa['positions'][i] = p.position
                 self._particles_array_soa['velocities'][i] = p.velocity
@@ -208,7 +212,7 @@ class Universe:
                 # Resize the buffer if needed
                 self._particles_array_aos = np.zeros((n, 12), dtype=np.float64)
                 self._particles_buffer_size = n
-            
+
             for i, p in enumerate(self.particles):
                 self._particles_array_aos[i, 0:3] = p.position
                 self._particles_array_aos[i, 3:6] = p.velocity
@@ -251,23 +255,23 @@ class Universe:
     def calculate_energy(self):
         """Calculates and stores kinetic and potential energy."""
         if not self.particles: return
-        
+
         kinetic = 0.5 * sum(p.mass * np.dot(p.velocity, p.velocity) for p in self.particles)
-        
+
         potential_grav = 0.0
         potential_elec = 0.0
         for i in range(len(self.particles)):
             for j in range(i + 1, len(self.particles)):
                 p1 = self.particles[i]
                 p2 = self.particles[j]
-                
+
                 # Use a small epsilon to prevent singularities
                 r = np.linalg.norm(p1.position - p2.position)
                 r_eps = max(r, 1e-6)
 
                 potential_grav -= (6.67430e-11 * p1.mass * p2.mass) / r_eps
                 potential_elec += (COULOMB_CONSTANT * p1.charge * p2.charge) / r_eps
-        
+
         potential = potential_grav + potential_elec
         total = kinetic + potential
 
@@ -298,7 +302,7 @@ class Universe:
         p = p[p > 0] # Avoid log(0)
         spatial_entropy = -np.sum(p * np.log2(p)) if len(p) > 0 else 0
         self.metrics["spatial_entropy"].append(spatial_entropy)
-        
+
         # --- Spectral Entropy ---
         # FFT of particle speeds to see if they're random or have a pattern.
         speeds = [np.linalg.norm(p.velocity) for p in self.particles]
@@ -321,7 +325,7 @@ class Universe:
         # Ensure directory exists
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         temp_filepath = filepath + ".tmp"
-        
+
         state_dict = {
             "schema_version": SCHEMA_VERSION,
             "time": self.time,
@@ -362,17 +366,17 @@ class Universe:
         """Loads the state from a file, with schema migration support."""
         if not os.path.exists(filepath):
             return None
-        
+
         try:
             with open(filepath, 'r') as f:
                 state_dict = json.load(f)
-            
+
             # --- Schema Version Migration Hooks ---
             # Call a dispatcher to handle older schemas.
             old_version = state_dict.get("schema_version", "0.0.0")
             if old_version != SCHEMA_VERSION:
                 state_dict = Universe._migrate_state(old_version, state_dict)
-            
+
             # Unpack the state into a new Universe object.
             universe = Universe(config=state_dict["config"])
             universe.time = state_dict["time"]
@@ -392,7 +396,7 @@ class Universe:
                 )
                 p.flags = p_dict.get("flags", 0)
                 universe.particles.append(p)
-            
+
             return universe
 
         except Exception as e:
@@ -417,11 +421,11 @@ class Universe:
         # Throttle metrics updates to avoid excessive memory usage.
         now = self.time
         interval = self.config.get('metrics.update_interval', 1.0)
-        
+
         if now - self._last_metrics_update_time >= interval:
             self.calculate_energy()
             self.calculate_entropy()
-            
+
             # Track FPS based on tick duration
             if self.step_counter > 0:
                 frame_time = now - self._last_step_time
@@ -430,3 +434,20 @@ class Universe:
                     self.metrics["fps"].append(fps)
             self._last_step_time = now
             self._last_metrics_update_time = now
+
+class AGIAgent:
+    """
+    Placeholder for the AGIAgent class.
+    This is a basic stub to allow the main application to run.
+    """
+    def __init__(self, universe, id):
+        self.universe = universe
+        self.id = id
+        self.position = np.random.rand(2) * universe.size
+        self.velocity = np.zeros(2)
+        self.total_reward = 0
+        self.reality_editing_resource = 1.0
+        self.self_awareness_score = 0
+        self.goal = np.random.rand(2) * universe.size
+        self.neurotransmitters = type('NTSystem', (object,), {'levels':{}})()
+        self.relationships = {}
